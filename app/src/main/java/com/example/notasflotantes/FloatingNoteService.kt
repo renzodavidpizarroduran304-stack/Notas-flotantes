@@ -37,6 +37,7 @@ class FloatingNoteService : Service() {
     private var params: WindowManager.LayoutParams? = null
     private var editor: EditText? = null
     private var speech: SpeechRecognizer? = null
+    private var speechButton: Button? = null
     private var listening = false
     private var minimized = false
     private var expanded = false
@@ -116,7 +117,8 @@ class FloatingNoteService : Service() {
 
         val actions = LinearLayout(this).apply { gravity = Gravity.CENTER }
         actions.addView(smallButton("Copiar todo") { copyAll() }, LinearLayout.LayoutParams(0, 44, 1f))
-        actions.addView(smallButton("Voz") { toggleSpeech() }, LinearLayout.LayoutParams(0, 44, 1f))
+        speechButton = smallButton("Voz") { toggleSpeech() }
+        actions.addView(speechButton, LinearLayout.LayoutParams(0, 44, 1f))
         root.addView(header)
         root.addView(input, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(actions)
@@ -203,95 +205,88 @@ class FloatingNoteService : Service() {
     }
 
     private fun toggleSpeech() {
-        if (listening || restartSpeech) {
+        if (restartSpeech) {
             restartSpeech = false
-            speechHandler.removeCallbacksAndMessages(null)
             listening = false
+            speechHandler.removeCallbacksAndMessages(null)
             speech?.cancel()
             speech?.destroy()
             speech = null
+            speechButton?.text = "Voz"
             Toast.makeText(this, "Dictado detenido", Toast.LENGTH_SHORT).show()
             return
         }
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            Toast.makeText(this, "El reconocimiento de voz no está disponible", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "El reconocimiento de voz no está disponible en este dispositivo", Toast.LENGTH_SHORT).show()
             return
         }
-        startSpeech()
-    }
-
-    private fun startSpeech() {
-        restartSpeech = true
         speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1000L)
         }
-        createSpeechRecognizerIfNeeded()
+        restartSpeech = true
+        speechButton?.text = "Detener voz"
         launchSpeechSession()
     }
 
-    private fun createSpeechRecognizerIfNeeded() {
-        if (speech != null) return
-        speech = SpeechRecognizer.createSpeechRecognizer(this).apply {
-            setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: android.os.Bundle?) { listening = true }
-                override fun onBeginningOfSpeech() { listening = true }
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() { }
-                override fun onError(error: Int) {
-                    if (!restartSpeech) return
-                    listening = false
-                    if (error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
-                        error == SpeechRecognizer.ERROR_NO_MATCH ||
-                        error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
+    // Android cierra cada sesión de SpeechRecognizer al detectar una pausa.
+    // Se crea una sesión nueva automáticamente mientras el usuario no pulse "Detener voz".
+    private fun launchSpeechSession() {
+        if (!restartSpeech) return
+        try {
+            speech?.cancel()
+            speech?.destroy()
+            speech = SpeechRecognizer.createSpeechRecognizer(this).apply {
+                setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: android.os.Bundle?) { listening = true }
+                    override fun onBeginningOfSpeech() { listening = true }
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() { listening = false }
+                    override fun onError(error: Int) {
+                        listening = false
                         scheduleSpeechRestart()
-                    } else {
-                        restartSpeech = false
-                        Toast.makeText(this@FloatingNoteService, "No se pudo continuar el dictado. Pulsa Voz para intentarlo otra vez.", Toast.LENGTH_SHORT).show()
                     }
-                }
-                override fun onResults(results: android.os.Bundle?) {
-                    if (!restartSpeech) return
-                    val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                    if (!spoken.isNullOrBlank()) {
-                        val current = editor?.text?.toString().orEmpty()
-                        editor?.append(if (current.isBlank()) spoken else " " + spoken)
-                        editor?.setSelection(editor?.text?.length ?: 0)
+                    override fun onResults(results: android.os.Bundle?) {
+                        val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                        if (!spoken.isNullOrBlank() && restartSpeech) {
+                            val current = editor?.text?.toString().orEmpty()
+                            editor?.append(if (current.isBlank()) spoken else " " + spoken)
+                            editor?.setSelection(editor?.text?.length ?: 0)
+                        }
+                        listening = false
+                        scheduleSpeechRestart()
                     }
-                    scheduleSpeechRestart()
-                }
-                override fun onPartialResults(partialResults: android.os.Bundle?) {}
-                override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
-            })
+                    override fun onPartialResults(partialResults: android.os.Bundle?) {}
+                    override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
+                })
+                startListening(speechIntent)
+            }
+            listening = true
+        } catch (_: Exception) {
+            listening = false
+            scheduleSpeechRestart()
         }
     }
 
     private fun scheduleSpeechRestart() {
         if (!restartSpeech) return
-        listening = false
         speechHandler.removeCallbacksAndMessages(null)
+        speech?.cancel()
+        speech?.destroy()
+        speech = null
         speechHandler.postDelayed({
             if (restartSpeech) launchSpeechSession()
-        }, 450L)
-    }
-
-    private fun launchSpeechSession() {
-        if (!restartSpeech) return
-        try {
-            speech?.startListening(speechIntent)
-            listening = true
-        } catch (_: Exception) {
-            scheduleSpeechRestart()
-        }
+        }, 700L)
     }
 
     override fun onDestroy() {
         restartSpeech = false
+        speechButton?.text = "Voz"
         speechHandler.removeCallbacksAndMessages(null)
         speech?.cancel()
         speech?.destroy()
