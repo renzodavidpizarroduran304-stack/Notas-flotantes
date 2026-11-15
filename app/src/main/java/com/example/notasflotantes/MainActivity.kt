@@ -55,8 +55,8 @@ class MainActivity : Activity() {
         if (requestCode == audioRequest && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             startFloatingNote()
         } else if (requestCode == audioRequest) {
-            Toast.makeText(this, "El dictado por voz necesita permiso de micrófono", Toast.LENGTH_LONG).show()
-            startFloatingNote()
+            Toast.makeText(this, "Activa el permiso de micrófono para abrir Notas Flotantes", Toast.LENGTH_LONG).show()
+            finish()
         }
     }
 
